@@ -12,6 +12,7 @@ Rule of thumb: an order either happens completely (balances change AND the
 order is saved) or not at all. `db()` makes sure of that with a transaction.
 """
 import math
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from exchanges import Quote
 
-DB_PATH = Path(__file__).with_name("crypto_mall.db")
+DB_PATH = Path(os.environ.get("CRYPTO_MALL_DB", str(Path(__file__).with_name("crypto_mall.db")))).expanduser()
 START_THB = 1_000_000.0
 ASSETS = ["THB", "BTC", "ETH"]
 
@@ -31,6 +32,7 @@ class OrderError(Exception):
 @contextmanager
 def db():
     """Open the database; commit if everything worked, roll back if not."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
