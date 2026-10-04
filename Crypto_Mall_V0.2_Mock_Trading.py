@@ -1,140 +1,163 @@
-import streamlit as st
+"""
+₿ Crypto Mall — V0.2 mock trading.
+Run with:  streamlit run app.py
+"""
+import math
+
 import pandas as pd
-from datetime import datetime
+import streamlit as st
+
+import portfolio
+from exchanges import build_mock_exchanges
 
 st.set_page_config(page_title="Crypto Mall", page_icon="₿", layout="wide")
+portfolio.init_db()
 
-# Crypto Mall V0.2 — Mock trading only; no real exchange connection or money.
+EXCHANGES = build_mock_exchanges()
+SYMBOLS = ["BTC/THB", "ETH/THB"]
+
+# Streamlit re-runs this whole file on every click, so prices live in
+# session_state and only change when you press "Refresh prices".
+if "quotes" not in st.session_state:
+    st.session_state.quotes = {}
+
+with st.sidebar:
+    st.header("₿ Crypto Mall")
+    symbol = st.selectbox("Pair", SYMBOLS)
+    if st.button("Refresh prices"):
+        st.session_state.quotes = {}
+    st.divider()
+    allow_reset = st.checkbox("I want to reset the wallet")
+    if st.button("Reset to ฿1,000,000", disabled=not allow_reset):
+        portfolio.reset_wallet()
+        st.session_state.flash = "Wallet reset. History cleared."
+        st.rerun()
+
+for s in SYMBOLS:
+    if s not in st.session_state.quotes:
+        st.session_state.quotes[s] = [ex.get_price(s) for ex in EXCHANGES]
+
+quotes = st.session_state.quotes[symbol]
+by_name = {q.exchange: q for q in quotes}
+coin = symbol.split("/")[0]
+balances = portfolio.get_balances()
+
+if "flash" in st.session_state:
+    st.toast(st.session_state.pop("flash"))
+
+# --- Header + wallet --------------------------------------------------------
 st.title("₿ Crypto Mall")
-st.caption("One place. Multiple exchanges. | V0.2 — Mock Trading")
-st.warning("โหมดจำลองเท่านั้น: ราคา, สภาพคล่อง และกระเป๋าเงินเป็นข้อมูลทดลอง ไม่มีเงินจริงและไม่มีการส่งคำสั่งไปยัง Exchange")
+st.caption("One place. Multiple exchanges.  Mock mode: simulated prices, wallet and orders. "
+           "No real money and no real exchange connection.")
 
-MARKETS = {
-    "BTC/THB": {
-        "asset": "BTC",
-        "Exchange A": {"bid": 3_099_000, "ask": 3_101_000, "fee": 0.25, "volume": 125.0},
-        "Exchange B": {"bid": 3_094_000, "ask": 3_096_000, "fee": 0.20, "volume": 82.0},
-        "Exchange C": {"bid": 3_107_000, "ask": 3_109_000, "fee": 0.15, "volume": 44.0},
-    },
-    "ETH/THB": {
-        "asset": "ETH",
-        "Exchange A": {"bid": 108_900, "ask": 109_100, "fee": 0.25, "volume": 920.0},
-        "Exchange B": {"bid": 108_500, "ask": 108_700, "fee": 0.20, "volume": 610.0},
-        "Exchange C": {"bid": 109_200, "ask": 109_400, "fee": 0.15, "volume": 380.0},
-    },
-}
+best_bids = {a: max(q.bid for q in st.session_state.quotes[f"{a}/THB"]) for a in ("BTC", "ETH")}
+total_value = balances["THB"] + sum(balances[a] * best_bids[a] for a in best_bids)
 
-if "wallet" not in st.session_state:
-    st.session_state.wallet = {"THB": 1_000_000.0, "BTC": 0.0, "ETH": 0.0}
-if "orders" not in st.session_state:
-    st.session_state.orders = []
+w1, w2, w3, w4 = st.columns(4)
+w1.metric("Cash (THB)", f"฿{balances['THB']:,.2f}")
+w2.metric("BTC", f"{balances['BTC']:.8f}")
+w3.metric("ETH", f"{balances['ETH']:.8f}")
+w4.metric("Estimated total", f"฿{total_value:,.0f}", f"{total_value - portfolio.START_THB:+,.0f} vs start")
 
-st.subheader("กระเป๋าเงินจำลอง")
-w1, w2, w3 = st.columns(3)
-w1.metric("THB คงเหลือ", f"฿{st.session_state.wallet['THB']:,.2f}")
-w2.metric("BTC", f"{st.session_state.wallet['BTC']:.8f}")
-w3.metric("ETH", f"{st.session_state.wallet['ETH']:.8f}")
+trade_tab, portfolio_tab, history_tab = st.tabs(["Trade", "Portfolio", "Order history"])
 
-st.divider()
-market = st.selectbox("เลือกคู่เหรียญ", list(MARKETS))
-market_data = MARKETS[market]
-asset = market_data["asset"]
-venues = list(k for k in market_data if k != "asset")
+# --- Trade ------------------------------------------------------------------
+with trade_tab:
+    best_buy = min(quotes, key=lambda q: q.effective_buy_price)
+    best_sell = max(quotes, key=lambda q: q.effective_sell_price)
+    c1, c2 = st.columns(2)
+    c1.metric("Cheapest to buy (after fee)", best_buy.exchange,
+              f"฿{best_buy.effective_buy_price:,.0f} per {coin}", delta_color="off")
+    c2.metric("Best to sell (after fee)", best_sell.exchange,
+              f"฿{best_sell.effective_sell_price:,.0f} per {coin}", delta_color="off")
 
-rows = []
-for venue in venues:
-    q = market_data[venue]
-    mid = (q["bid"] + q["ask"]) / 2
-    rows.append({
-        "Exchange": venue,
-        "Bid (ราคาขาย)": q["bid"],
-        "Ask (ราคาซื้อ)": q["ask"],
-        "Spread (%)": (q["ask"] - q["bid"]) / mid * 100,
-        "Fee (%)": q["fee"],
-        "Liquidity (จำลอง)": q["volume"],
-    })
-df = pd.DataFrame(rows)
-best_buy = df.loc[df["Ask (ราคาซื้อ)"].idxmin()]
-best_sell = df.loc[df["Bid (ราคาขาย)"].idxmax()]
-
-st.subheader(f"Market Overview — {market}")
-m1, m2, m3 = st.columns(3)
-m1.metric("ราคาซื้อดีที่สุด", f"฿{best_buy['Ask (ราคาซื้อ)']:,.0f}", str(best_buy["Exchange"]))
-m2.metric("ราคาขายดีที่สุด", f"฿{best_sell['Bid (ราคาขาย)']:,.0f}", str(best_sell["Exchange"]))
-m3.metric("ส่วนต่างก่อนค่าธรรมเนียม", f"฿{best_sell['Bid (ราคาขาย)'] - best_buy['Ask (ราคาซื้อ)']:,.0f}")
-
-st.dataframe(
-    df.style.format({
-        "Bid (ราคาขาย)": "฿{:,.0f}",
-        "Ask (ราคาซื้อ)": "฿{:,.0f}",
-        "Spread (%)": "{:.4f}%",
-        "Fee (%)": "{:.2f}%",
-        "Liquidity (จำลอง)": "{:,.1f}",
-    }),
-    use_container_width=True,
-    hide_index=True,
-)
-
-st.divider()
-st.subheader("ทดลองซื้อขาย (Paper Trading)")
-side = st.radio("ประเภทคำสั่ง", ["Buy", "Sell"], horizontal=True)
-venue = st.selectbox("เลือก Exchange", venues, key=f"venue_{market}")
-quantity = st.number_input(f"จำนวน {asset}", min_value=0.0, value=0.001, step=0.001, format="%.8f")
-quote = market_data[venue]
-price = quote["ask"] if side == "Buy" else quote["bid"]
-fee_rate = quote["fee"] / 100
-gross = quantity * price
-fee = gross * fee_rate
-total_buy = gross + fee
-net_sell = gross - fee
-
-if side == "Buy":
-    st.write(f"ราคาอ้างอิง: ฿{price:,.2f} / {asset}")
-    st.write(f"มูลค่าซื้อ: ฿{gross:,.2f} | ค่าธรรมเนียมจำลอง: ฿{fee:,.2f}")
-    st.write(f"ยอดที่ใช้ทั้งหมด: **฿{total_buy:,.2f}**")
-    can_submit = quantity > 0 and st.session_state.wallet["THB"] >= total_buy
-else:
-    st.write(f"ราคาอ้างอิง: ฿{price:,.2f} / {asset}")
-    st.write(f"มูลค่าขาย: ฿{gross:,.2f} | ค่าธรรมเนียมจำลอง: ฿{fee:,.2f}")
-    st.write(f"ยอดรับสุทธิ: **฿{net_sell:,.2f}**")
-    can_submit = quantity > 0 and st.session_state.wallet[asset] >= quantity
-
-if st.button(f"ยืนยัน {side} {asset} (จำลอง)", type="primary", disabled=not can_submit):
-    if side == "Buy":
-        st.session_state.wallet["THB"] -= total_buy
-        st.session_state.wallet[asset] += quantity
-    else:
-        st.session_state.wallet[asset] -= quantity
-        st.session_state.wallet["THB"] += net_sell
-    st.session_state.orders.insert(0, {
-        "เวลา": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "คู่เหรียญ": market,
-        "Side": side,
-        "Exchange": venue,
-        "จำนวน": quantity,
-        "ราคา": price,
-        "Fee (THB)": fee,
-        "สถานะ": "Filled (จำลอง)",
-    })
-    st.success("ทำรายการจำลองสำเร็จ")
-    st.rerun()
-
-if side == "Buy" and st.session_state.wallet["THB"] < total_buy:
-    st.info("ยอด THB ไม่เพียงพอสำหรับคำสั่งนี้")
-if side == "Sell" and st.session_state.wallet[asset] < quantity:
-    st.info(f"จำนวน {asset} ในกระเป๋าไม่เพียงพอ")
-
-st.divider()
-st.subheader("ประวัติคำสั่ง")
-if st.session_state.orders:
-    st.dataframe(pd.DataFrame(st.session_state.orders), use_container_width=True, hide_index=True)
-else:
-    st.caption("ยังไม่มีรายการซื้อขาย ลองส่งคำสั่งจำลองด้านบนได้เลย")
-
-with st.expander("หมายเหตุและขั้นตอนถัดไป"):
-    st.markdown(
-        "- ข้อมูลราคาและค่าธรรมเนียมเป็นค่าตัวอย่างที่กำหนดไว้ในโค้ด\n"
-        "- ข้อมูลกระเป๋าและประวัติอยู่ใน Streamlit session; รีสตาร์ตแอปหรือ session ใหม่อาจทำให้ข้อมูลทดลองหาย\n"
-        "- V0.3: เชื่อมราคาสาธารณะจาก Exchange โดยยังไม่ส่งคำสั่งซื้อขายจริง\n"
-        "- V0.4: คำนวณ Best Execution รวมค่าธรรมเนียมและขนาดคำสั่ง"
+    st.dataframe(
+        pd.DataFrame({
+            "Exchange": [q.exchange for q in quotes],
+            "Bid (you sell at)": [f"฿{q.bid:,.0f}" for q in quotes],
+            "Ask (you buy at)": [f"฿{q.ask:,.0f}" for q in quotes],
+            "Spread": [f"฿{q.spread:,.0f} ({q.spread_pct:.2%})" for q in quotes],
+            "Fee": [f"{q.fee_rate:.2%}" for q in quotes],
+            "Buy cost after fee": [f"฿{q.effective_buy_price:,.0f}" for q in quotes],
+            "Sell proceeds after fee": [f"฿{q.effective_sell_price:,.0f}" for q in quotes],
+        }),
+        hide_index=True, width="stretch",
     )
+
+    st.subheader(f"Place a mock order: {symbol}")
+    buy_col, sell_col = st.columns(2)
+
+    with buy_col:
+        st.markdown("**Buy**")
+        names = list(by_name)
+        buy_ex = st.selectbox("Exchange", names, index=names.index(best_buy.exchange), key=f"buy_ex_{symbol}")
+        thb = st.number_input("Amount to spend (THB)", min_value=0.0, value=50_000.0, step=1_000.0)
+        got, fee = by_name[buy_ex].buy(thb)
+        st.write(f"You receive about **{got:.8f} {coin}**, fee **฿{fee:,.2f}**.")
+        enough = 0 < thb <= balances["THB"]
+        if thb > balances["THB"]:
+            st.warning(f"Not enough THB. You have ฿{balances['THB']:,.2f}.")
+        if st.button(f"Confirm buy {coin}", type="primary", disabled=not enough):
+            try:
+                coins = portfolio.buy(by_name[buy_ex], thb)
+                st.session_state.flash = f"Bought {coins:.8f} {coin} on {buy_ex}."
+                st.rerun()
+            except portfolio.OrderError as e:
+                st.error(str(e))
+
+    with sell_col:
+        st.markdown("**Sell**")
+        held = balances[coin]
+        st.caption(f"You hold {held:.8f} {coin}")
+        sell_ex = st.selectbox("Exchange", names, index=names.index(best_sell.exchange), key=f"sell_ex_{symbol}")
+        default_sell = math.floor(held * 1e8) / 1e8
+        amount = st.number_input(f"Amount to sell ({coin})", min_value=0.0, value=default_sell,
+                                 step=0.001, format="%.8f")
+        back, fee = by_name[sell_ex].sell(amount)
+        st.write(f"You receive about **฿{back:,.2f}**, fee **฿{fee:,.2f}**.")
+        if amount > held + 1e-8:
+            st.warning(f"Not enough {coin}.")
+        can_sell = 0 < amount <= held + 1e-8
+        if st.button(f"Confirm sell {coin}", type="primary", disabled=not can_sell):
+            try:
+                thb_back = portfolio.sell(by_name[sell_ex], amount)
+                st.session_state.flash = f"Sold {amount:.8f} {coin} on {sell_ex} for ฿{thb_back:,.2f}."
+                st.rerun()
+            except portfolio.OrderError as e:
+                st.error(str(e))
+
+# --- Portfolio --------------------------------------------------------------
+with portfolio_tab:
+    rows = [("THB", balances["THB"], balances["THB"])]
+    rows += [(a, balances[a], balances[a] * best_bids[a]) for a in ("BTC", "ETH")]
+    st.dataframe(
+        pd.DataFrame({
+            "Asset": [r[0] for r in rows],
+            "Amount": [f"฿{r[1]:,.2f}" if r[0] == "THB" else f"{r[1]:.8f}" for r in rows],
+            "Estimated value": [f"฿{r[2]:,.2f}" for r in rows],
+            "Share": [f"{r[2] / total_value:.1%}" for r in rows],
+        }),
+        hide_index=True, width="stretch",
+    )
+    st.caption("Coins are valued at the best bid across the three exchanges, before fees.")
+
+# --- History ----------------------------------------------------------------
+with history_tab:
+    orders = portfolio.get_orders()
+    if orders:
+        st.dataframe(
+            pd.DataFrame({
+                "Time": [o["created_at"] for o in orders],
+                "Pair": [o["symbol"] for o in orders],
+                "Side": [o["side"] for o in orders],
+                "Exchange": [o["exchange"] for o in orders],
+                "Coins": [f"{o['coins']:.8f}" for o in orders],
+                "Price": [f"฿{o['price']:,.0f}" for o in orders],
+                "Fee": [f"฿{o['fee_thb']:,.2f}" for o in orders],
+                "THB spent / received": [f"฿{o['total_thb']:,.2f}" for o in orders],
+                "Status": [o["status"] for o in orders],
+            }),
+            hide_index=True, width="stretch",
+        )
+    else:
+        st.caption("No orders yet. Place a mock order on the Trade tab.")
