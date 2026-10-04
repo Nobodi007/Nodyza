@@ -1,5 +1,5 @@
 """
-₿ Crypto Mall — V0.2 mock trading.
+₿ Crypto Mall — V0.2.2 mock trading.
 Run with:  streamlit run app.py
 """
 import math
@@ -92,7 +92,7 @@ with trade_tab:
         names = list(by_name)
         buy_ex = st.selectbox("Exchange", names, index=names.index(best_buy.exchange), key=f"buy_ex_{symbol}")
         thb = st.number_input("Amount to spend (THB)", min_value=0.0, value=50_000.0, step=1_000.0)
-        got, fee = by_name[buy_ex].buy(thb)
+        got, fee = by_name[buy_ex].buy(thb) if thb > 0 else (0.0, 0.0)
         st.write(f"You receive about **{got:.8f} {coin}**, fee **฿{fee:,.2f}**.")
         enough = 0 < thb <= balances["THB"]
         if thb > balances["THB"]:
@@ -113,7 +113,7 @@ with trade_tab:
         default_sell = math.floor(held * 1e8) / 1e8
         amount = st.number_input(f"Amount to sell ({coin})", min_value=0.0, value=default_sell,
                                  step=0.001, format="%.8f")
-        back, fee = by_name[sell_ex].sell(amount)
+        back, fee = by_name[sell_ex].sell(amount) if amount > 0 else (0.0, 0.0)
         st.write(f"You receive about **฿{back:,.2f}**, fee **฿{fee:,.2f}**.")
         if amount > held + 1e-8:
             st.warning(f"Not enough {coin}.")
@@ -135,7 +135,7 @@ with portfolio_tab:
             "Asset": [r[0] for r in rows],
             "Amount": [f"฿{r[1]:,.2f}" if r[0] == "THB" else f"{r[1]:.8f}" for r in rows],
             "Estimated value": [f"฿{r[2]:,.2f}" for r in rows],
-            "Share": [f"{r[2] / total_value:.1%}" for r in rows],
+            "Share": [f"{r[2] / total_value:.1%}" if total_value > 0 else "0.0%" for r in rows],
         }),
         hide_index=True, width="stretch",
     )
